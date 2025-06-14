@@ -1,0 +1,867 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Packages to load, echo=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(forcats)
+library(readr)
+library(dplyr)
+library(ggpubr)
+library(writexl)
+```
+
+```{r Read in excel spreadsheet, include=FALSE}
+processed.data <- read.delim(file = "//Users//chaca430//Documents//R Studio//all.data//all_guides-7554-8683a-8683b.tsv",header = FALSE)
+colnames(processed.data) <- (c("sample","guide.id.1","guide.id.2","gene.name.1","gene.name.2","product.1","product.2","gene.id.1","gene.id.2","guide.tag.1.exp","guide.tag.2.exp","wt.hm.1","wt.hm.2","reads.total","reads.norm","sample.name","replicate","day","strain","exclude","exp.id"))
+```
+
+```{r Select only columns of interest, include=FALSE}
+select(processed.data,"gene.name.1","gene.name.2","reads.total")
+data_interest <- select(processed.data,"gene.name.1","gene.name.2","reads.total")
+#Combine both guide names into one, separated by a +
+data_interest$comb.name <- paste(data_interest$gene.name.1,"+",data_interest$gene.name.2) 
+##Selecting only total reads for now
+reads_total <- select(processed.data,"reads.total")
+##Sort data from highest to lowest
+ranked.total.reads <- data_interest[order(data_interest$reads.total),]
+```
+
+``` {r Selecting Normalised Reads, include=FALSE}
+data_normalised <- select(processed.data,"gene.name.1","gene.name.2","reads.norm")
+  #Combine both guide names into one, separated by a +
+data_normalised$comb.name <- paste(data_normalised$gene.name.1,"+",data_normalised$gene.name.2) 
+  #Sort data from highest to lowest
+ranked.norm.reads <- data_normalised[order(data_normalised$reads.norm),]
+```
+
+``` {r Normalising data to Day 0, echo=FALSE}
+
+data.interest <- processed.data %>% select(gene.name.1,
+                                           gene.name.2,
+                                           reads.total,
+                                           everything())
+control.names<-c("control1","control2","control3","control4","control5")
+
+data.interest <- data.interest %>% mutate(guide.pair = paste0(gene.name.1," + ",gene.name.2)) %>%
+                                   arrange(desc(reads.total))
+data.t0 <- data.interest %>% filter(day ==0) %>%
+  group_by(guide.pair) %>%
+  summarise(counts=n(),
+            reads.norm.t0.mean=mean(reads.norm),
+            reads.norm.t0.sd=sd(reads.norm))
+data.norm.t0 <- data.interest %>% left_join(data.t0, by="guide.pair") %>%
+  ungroup()%>%
+  mutate(reads.norm.t0 = reads.norm/reads.norm.t0.mean)
+
+#Make fake day 0 table
+aa<-data.norm.t0 %>% filter(day==0 & replicate ==1) %>% mutate(replicate=paste(c(3:5),collapse="_")) %>% separate_rows(replicate,sep="_") %>% mutate(reads.norm.t0 = 1)
+
+ab<-aa%>%mutate(replicate=as.numeric(replicate)) %>% filter(replicate%in%c(3:5) | sample.name!="ATc-0")
+
+ac<-data.norm.t0 %>% bind_rows(ab)
+
+data.norm.t0 <- data.interest %>% left_join(data.t0, by="guide.pair") %>%
+  ungroup()%>%
+  mutate(reads.norm.t0 = reads.norm/reads.norm.t0.mean)
+
+# #######
+# gene.list<-sort(unique(data.norm.t0$gene.name.1))
+# 
+# 
+# for (gene in gene.list){
+#   plot_position_effect_norm(gene)
+# } 
+```
+
+```{r Histogram of Normalised reads, include=FALSE}
+ggplot(data.norm.t0) + geom_histogram(aes(x=reads.norm.t0))+
+  labs(y="Count", x="Guide combinations")+ 
+  ggtitle("Number of Normalised Reads Compared to Day 0")+ 
+  scale_x_log10()
+
+data.norm.t0 %>% 
+  filter(day==c(14),sample.name==c("ATc-3_0"))%>% 
+  ggplot() + geom_histogram(aes(x=reads.total)) +
+  scale_x_log10() + 
+  facet_wrap(day~sample.name~replicate, scales = "fixed",nrow = 1)
+```
+
+```{r Combining all data into one averaged set, echo=FALSE}
+data.norm.t0 <- data.norm.t0 %>% 
+  filter(!gene.name.1%in%c("efpA","leuS","rpsP"),!gene.name.2%in%c("efpA","leuS","rpsP"))
+
+combined.data.average <- data.norm.t0 %>% 
+  filter(sample.name!="ATc-0_10_3") %>% 
+  filter(!gene.name.1%in%c("efpA","rpsP","leuS"),!gene.name.2%in%c("efpA","rpsP","leuS")) %>% 
+  group_by(sample.name,day,gene.name.1, gene.name.2) %>%
+  summarise(mean_reads_norm=mean(reads.norm, na.rm = TRUE),sd_reads_norm = sd(reads.norm))
+
+# combine_into_mean_ctrl <-function(data,ATc,gene_name){
+#   data %>% 
+#   filter(sample.name==ATc, gene.name.1%in%c("control1","control2","control3","control4","control5"), gene.name.2%in%c(gene_name)) %>% 
+#   ggplot()+
+#   geom_line(aes(day,mean_reads_norm))+
+#   geom_errorbar(aes(ymin=(mean_reads_norm-sd_reads_norm),ymax=(mean_reads_norm+sd_reads_norm), x=day, y=mean_reads_norm))+
+#   scale_x_continuous(limits = c(5,14), breaks = c(5,10,14))+
+#   #ylim(global_min,global_max)+
+#   facet_grid(gene.name.2~gene.name.1)+
+#   theme_bw() 
+#   }
+# combine_into_mean_ctrl(combined.data.average,"ATc-300","ndh")
+```
+
+```{r Heatmaps of averaged data, echo =FALSE}
+combined.data.average$atc.day <- paste(combined.data.average$sample.name,combined.data.average$day,sep = ", Day ")  
+
+global_min <- log10(min(combined.data.average$mean_reads_norm))
+global_max <- log10(max(combined.data.average$mean_reads_norm))
+
+sp.file.avg <- combined.data.average %>% split.data.frame(.,f=c(.$atc.day))
+
+##create for loop using function
+for (i in 1:length(sp.file.avg)) {
+x <- create_heatmap(sp.file.avg[[i]], combined.data.average)
+print(x)
+}
+heatmap_all <- NULL
+for (i in 1:length(sp.file.avg)) {
+  temp_file <- sp.file.avg[[i]]
+  heatmap_all[[i]] <-
+    ggplot(sp.file.avg[[i]])+
+    geom_tile(aes(gene.name.1,gene.name.2,fill=log10(mean_reads_norm)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+ scale_fill_gradientn(colours = rev(rainbow(6)), name = bquote(atop("Read Frequency", "Log10")), limits=c(global_min,global_max))+
+  theme(aspect.ratio = 1)+
+  ggtitle(names(sp.file.avg[i]))+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5))
+  print(heatmap_all[[i]])
+  }
+
+# split_file is the file(list) we made that contains all the subset datasets
+                # length(split_file) will calculate the total number of subsets in the file
+                # the for loop will go from 1 to the total number of subsets (for example 36), using i to represent the number for                   each round
+# for each number this will extract the content of the assocated dataset  (i.e. split_file[[1]], splitfile[[2]]), and create the heatmap, please add other necessary parts like the scale_gradient and rotate axis text etc.
+```
+
+```{r control sgRNA responses, echo=FALSE}
+global_min <- min(log10(processed.data$reads.norm))
+global_max <- max(log10(processed.data$reads.norm))
+##line graph
+processed.data %>% 
+  filter(sample.name%in%c("ATc-0","ATc-3","ATc-30","ATc-300"),gene.name.1%in%c("control1","control2","control3","control4","control5"), gene.name.2%in%c("control1","control2","control3","control4","control5")) %>% 
+  filter(gene.name.1==gene.name.2) %>% 
+  mutate(rep_group=as.factor(as.character(replicate))) %>% 
+  ggplot()+
+  geom_line(aes(day,log10(reads.norm), group=rep_group, colour=rep_group))+
+  scale_x_continuous(limits = c(0,14), breaks = c(0,5,10,14))+
+  labs(colour="Replicate")+
+  ylab("Normalised reads")+
+  # ylim(global_min,global_max)+
+  ggtitle("Control sgRNA responses")+
+  facet_grid(sample.name~gene.name.1)+
+  theme_bw()
+
+global_min <- min(log2(combined.data.average$mean_reads_norm))
+global_max <- max(log2(combined.data.average$mean_reads_norm))
+#Heatmap
+combined.data.average %>% 
+  filter(sample.name%in%c("ATc-0","ATc-3","ATc-30","ATc-300"),gene.name.1%in%c("control1","control2","control3","control4","control5"), gene.name.2%in%c("control1","control2","control3","control4","control5"),!day==0) %>% 
+  ggplot()+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(log2(mean_reads_norm))))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+  scale_fill_gradientn(colours = rev(rainbow(4)), name = bquote(atop("Read Frequency", "Log2")), limits=c(global_min,global_max))+
+  ggtitle("Control sgRNA responses")+
+  theme(aspect.ratio = 2)+
+  facet_grid(sample.name~day)+
+  theme(axis.text.x = element_text(angle = 45,size = 5), axis.text.y.left = element_text(angle=90,size = 5))+
+  theme_bw()
+```
+
+```{r Guide Position Effects, echo=FALSE}
+global_min <- min((data.norm.t0$reads.norm.t0))
+global_max <- max((data.norm.t0$reads.norm.t0))
+
+control.names<-c("control1","control2","control3","control4","control5")
+
+
+plot_position_effect<-function(gene.name){
+plot.1<-data.norm.t0 %>% 
+  filter(sample.name=="ATc-0", gene.name.2%in%control.names, gene.name.1==gene.name) %>%   mutate(rep_group=as.factor(as.character(replicate))) %>% 
+  ggplot()+
+  geom_line(aes(day, (reads.norm.t0), group=rep_group, colour=rep_group))+
+  scale_x_continuous(limits = c(0,14), breaks = c(0,5,10,14))+
+  ylim(global_min,global_max)+
+  facet_grid(gene.name.1~gene.name.2)+
+  theme_bw() 
+
+
+
+
+plot.2<-data.norm.t0 %>% 
+  filter(sample.name=="ATc-0", gene.name.1%in%control.names, gene.name.2==gene.name) %>%   mutate(rep_group=as.factor(as.character(replicate))) %>% 
+  ggplot()+
+  geom_line(aes(day, (reads.norm.t0), group=rep_group, colour=rep_group))+
+  scale_x_continuous(limits = c(0,14), breaks = c(0,5,10,14))+
+  ylim(global_min,global_max)+
+  facet_grid(gene.name.2~gene.name.1)+
+  theme_bw() 
+
+plot.out<-ggarrange(plot.1,plot.2,common.legend = TRUE,legend = "bottom", nrow = 2, labels = c("P1","P2"))
+
+print(plot.out)
+
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/guide.pos.effects/",gene.name,".jpg"),plot = plot.out,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300)  
+}
+```
+
+```{r Plotting each guide position effect,echo=FALSE}
+plot_position_effect("adoK")
+plot_position_effect("alr")
+plot_position_effect("aroK")
+plot_position_effect("atpB")
+plot_position_effect("AtpE")
+plot_position_effect("ClpC1")
+plot_position_effect("cydB")
+plot_position_effect("ddn")
+plot_position_effect("dnaB")
+plot_position_effect("DnaN")
+plot_position_effect("DprE1")
+plot_position_effect("EmbA")
+plot_position_effect("EmbC")
+plot_position_effect("ethA")
+plot_position_effect("fadD32")
+plot_position_effect("fbiC")
+plot_position_effect("fgd1")
+plot_position_effect("folC")
+plot_position_effect("folP1")
+plot_position_effect("ftsZ")
+plot_position_effect("glcB")
+plot_position_effect("glf")
+plot_position_effect("glgE")
+plot_position_effect("GuaB2")
+plot_position_effect("gyrA")
+plot_position_effect("gyrB")
+plot_position_effect("HadA")
+plot_position_effect("InhA")
+plot_position_effect("KasA")
+plot_position_effect("lysA")
+plot_position_effect("menD")
+plot_position_effect("metA")
+plot_position_effect("mmpL3")
+plot_position_effect("mshA")
+plot_position_effect("murE")
+plot_position_effect("murX")
+plot_position_effect("ndh")
+plot_position_effect("pknA")
+plot_position_effect("pks13")
+plot_position_effect("PptT")
+plot_position_effect("pyrG_hm")
+plot_position_effect("qcrB")
+plot_position_effect("rfe")
+plot_position_effect("rplC")
+plot_position_effect("rpoA")
+plot_position_effect("rpoB")
+plot_position_effect("rpsA")
+plot_position_effect("rrl")
+plot_position_effect("rrs")
+plot_position_effect("treS")
+plot_position_effect("trpA")
+plot_position_effect("trpB")
+```
+
+```{r Dual vs Single Effects, echo=FALSE}
+removed.dataset <- data.norm.t0 %>% mutate(sample.metadata = paste(sample.name,day,replicate,sep="_"))%>% 
+  rowwise()%>%
+  mutate(g1.g2 = paste0(sort(c(gene.name.1,gene.name.2)),collapse = "_"))
+
+removed.dataset$g1.g2 <- apply(removed.dataset[,c("gene.name.1","gene.name.2")],1, function(x) {paste(sort(x),collapse= "_")}) 
+
+ctrl_rm <- removed.dataset%>% 
+  group_by(g1.g2,gene.name.1,gene.name.2,sample.name,day) %>% 
+  summarise(mean_reads_norm.t0=mean(reads.norm.t0),sd_mean_reads_norm.t0=sd(reads.norm.t0)) %>% 
+  filter(!gene.name.1%in%setdiff("control3",control.names),!gene.name.2%in%setdiff("control1",control.names),!sample.name%in%c("ATc-300_0"))
+
+dual_single_effects <- function(dataset,gene1,gene2,control="control1"){
+  temp_datafile= dataset %>% 
+    filter(g1.g2%in%c(paste0(gene1,"_",gene2),
+                       paste0(gene2,"_",gene1),
+                       paste0(gene1,"_",control),
+                       paste0(gene2,"_",control),
+                       paste0(control,"_",gene1)
+                       ,paste0(control,"_",gene2)),
+           !sample.name%in%c("ATc-3_0","ATc-30_0","ATc-300_0","ATc-0","ATc-3","ATc-30"))
+}
+
+qcrB_ndh <- dual_single_effects(ctrl_rm,"qcrB","ndh")
+ndh_menD <- dual_single_effects(ctrl_rm,"ndh","menD")
+qcrB_atpB <- dual_single_effects(ctrl_rm,"qcrB","atpB")
+atpB_menD <- dual_single_effects(ctrl_rm,"atpB","menD")
+pks13_rpoB <- dual_single_effects(ctrl_rm,"pks13","rpoB")
+pks13_rpoA <- dual_single_effects(ctrl_rm,"pks13","rpoA")
+pks13_atpB <- dual_single_effects(ctrl_rm,"pks13","atpB")
+pks13_atpE <- dual_single_effects(ctrl_rm,"pks13","AtpE")
+pks13_mmpl3 <- dual_single_effects(ctrl_rm,"pks13","mmpL3")
+
+        ggplot(pks13_mmpl3) + 
+        geom_line(aes(x=day,y=log2(mean_reads_norm.t0),group=paste0(gene.name.1,"_",gene.name.2), color=paste0(gene.name.1,"_",gene.name.2)))+
+        # geom_errorbar(aes(ymin=(mean_reads_norm-sd_mean_reads_norm),ymax=(mean_reads_norm+sd_mean_reads_norm), x=day, y=mean_reads_norm))+
+        scale_x_continuous(limits = c(5,14), breaks = c(5,10,14))+
+        ylim(-7.5,2.5)+
+        facet_wrap(~sample.name,ncol = 4)+
+        theme_bw()+
+        theme(legend.title = element_blank())
+      
+print(atpB_cydB)
+
+
+global_min <- (min(ctrl_rm$mean_reads_norm.t0))
+global_max <- (max(ctrl_rm$mean_reads_norm.t0))
+
+for (g1 in unique(ctrl_rm$gene.name.1)) {
+  
+  for (g2 in unique(ctrl_rm$gene.name.1)) {
+    #print(paste0(g1,g2))
+    temp_d<- dual_single_effects(ctrl_rm,g1,g2)
+    if (length(unique(temp_d$g1.g2))==3) {
+      # print("sanity checked")
+      temp_p <- 
+        ggplot(temp_d) + 
+        geom_line(aes(x=day,y=log2(mean_reads_norm.t0),group=paste0(gene.name.1,"_",gene.name.2), color=paste0(gene.name.1,"_",gene.name.2)))+
+        # geom_errorbar(aes(ymin=(mean_reads_norm-sd_mean_reads_norm),ymax=(mean_reads_norm+sd_mean_reads_norm), x=day, y=mean_reads_norm))+
+        scale_x_continuous(limits = c(0,14), breaks = c(0,5,10,14))+
+        ylim(-10,5)+
+        facet_wrap(~sample.name,ncol = 4)+
+        theme_bw()+
+        theme(legend.title = element_blank())
+      print(temp_p)
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/dual.vs.single.effects/",g1,"_",g2,".jpg"),plot = temp_p,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300)} 
+    }
+}
+```
+
+```{r Creating column with ATc conc only, echo=FALSE}
+removed.dataset <- removed.dataset %>% 
+  filter(!sample.metadata=="ATc-0_10_3",
+         !gene.name.1%in%c(!gene.name.1%in%c("control2","control3","control4","control5","efpA","leuS","rpsP"),
+         !gene.name.2%in%c("control2","control3","control4","control5","efpA","leuS","rpsP")))
+
+# removed.dataset$sample.name <-gsub("ATc-","",removed.dataset$sample.name)
+```
+
+```{r Synergy vs Additive effects - Day 14 - ATc300, echo=FALSE}
+atc.0.300.comp.d14 <- removed.dataset %>% 
+  filter(sample.name%in%c("ATc-300","ATc-0"),
+         day==14,
+         !gene.name.1%in%c("control2","control3","control4","control5","efpA","leuS","rpsP"),
+         !gene.name.2%in%c("control2","control3","control4","control5","efpA","leuS","rpsP")) %>% 
+  pivot_wider(id_cols = c(gene.name.1,gene.name.2,day,replicate, guide.id.1,guide.id.2), names_from = sample.name, values_from = reads.norm.t0) %>% 
+  mutate(modified.int=ifelse(is.na(`ATc-300`),1,0),
+    `ATc-300`=ifelse(is.na(`ATc-300`),0,`ATc-300`), difference.log2=log2(`ATc-300`/`ATc-0`))
+
+synergy.vs.additive.d14<-atc.0.300.comp.d14 %>% 
+  dplyr::mutate(guide.1=gene.name.1, guide.1B = "control1", guide.2=gene.name.2,guide.2B = "control1",
+                log2.reduction.reads1=difference.log2[match(paste0(guide.1,guide.1B), paste0(gene.name.1,gene.name.2))],
+                log2.reduction.reads2=difference.log2[match(paste0(guide.2,guide.2B), paste0(gene.name.2,gene.name.1))]) %>% 
+mutate(
+  log2.reduction.reads1=ifelse(log2.reduction.reads1>=0,0,log2.reduction.reads1),
+  log2.reduction.reads2=ifelse(log2.reduction.reads2>=0,0,log2.reduction.reads2),
+  additive.effect=log2.reduction.reads1+log2.reduction.reads2,
+      syn.add.diff=difference.log2-additive.effect) %>% 
+  mutate(essentiality1=dual_grna_libraries$essential[match(gene.name.1,dual_grna_libraries$gene.name)],
+         essentiality2=dual_grna_libraries$essential[match(gene.name.2,dual_grna_libraries$gene.name)]) %>% 
+  filter(!syn.add.diff=="-Inf")
+
+#Adjust global min and max
+global_min <- min(synergy.vs.additive.d14$syn.add.diff)
+##Must removed infinite number at the top of the table
+global_max <- max(synergy.vs.additive.d14$syn.add.diff)
+
+#Heatmap
+temp_a <- synergy.vs.additive.d14 %>% 
+  filter(replicate=="5") %>% 
+  ggplot()+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(syn.add.diff)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+  scale_fill_gradientn(colours = rev(rainbow(6)), name = bquote(atop("Read Frequency", "Log2")),limits=c(global_min,global_max))+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 14, Replicate 5")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5), panel.grid = element_blank()) 
+
+print(temp_d)
+
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/synergy.vs.additive/","Synergy vs Additive effects - Day 14, Replicate 5.jpg"),plot = temp_a,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+
+synergy.vs.additive.d14.avg <- synergy.vs.additive.d14 %>% 
+  group_by(gene.name.1,gene.name.2,guide.id.1,guide.id.2,day,guide.1,guide.1B,guide.2,guide.2B) %>%   
+  summarise(mean.ATc.300=mean(`ATc-300`),
+         mean.ATc.0=mean(`ATc-0`),
+         mean.difference.log2=mean(difference.log2),
+         mean.syn.add.diff=mean(syn.add.diff),
+         sd.mean.syn.add.diff=sd(syn.add.diff),
+         mean.log2.reduction.reads1=mean(log2.reduction.reads1),
+         mean.log2.reduction.reads2=mean(log2.reduction.reads2),
+         additive.effect=mean(additive.effect),
+         n=n()) %>% 
+  mutate(essentiality1=dual_grna_libraries$essential[match(gene.name.1,dual_grna_libraries$gene.name)],
+         essentiality2=dual_grna_libraries$essential[match(gene.name.2,dual_grna_libraries$gene.name)])
+
+x <- ggplot(synergy.vs.additive.d14.avg)+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(mean.syn.add.diff)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+  scale_fill_gradient(low = "#1A05AD",high = "white", name = bquote(atop("Read Frequency", "Log2")),
+                      limits=c(global_min_syn_add,-1),
+                      na.value = "white")+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 14, ATc 300")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 8), axis.text.y.left = element_text(size = 8), panel.grid = element_blank()) 
+print(plot(x))
+
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/synergy.vs.additive/","Synergy vs Additive effects - Day 14 - Average.jpg"),plot = x,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+
+##List of hits that have greater that a 4 log2 reduction
+syn.vs.add.300.14 <- synergy.vs.additive.d14.avg %>% 
+  filter(mean.syn.add.diff<(-4))
+
+write_xlsx(syn.vs.add.300.14,"/Users/chaca430/Documents/R Studio/all.data/syn.vs.add.diff.300.14.xlsx") 
+
+```
+
+```{r Synergy vs Additive effects - Day 14 - ATc30, echo=FALSE}
+atc.0.30.comp.d14 <- removed.dataset %>% 
+  filter(sample.name%in%c("ATc-30","ATc-0"),
+         day==14,
+         !gene.name.1%in%c("control2","control3","control4","control5","efpA","leuS","rpsP"),
+         !gene.name.2%in%c("control2","control3","control4","control5","efpA","leuS","rpsP")) %>% 
+  pivot_wider(id_cols = c(gene.name.1,gene.name.2,day,replicate, guide.id.1,guide.id.2), names_from = sample.name, values_from = reads.norm.t0) %>% 
+  mutate(modified.int=ifelse(is.na(`ATc-30`),1,0),
+    `ATc-30`=ifelse(is.na(`ATc-30`),0,`ATc-30`), difference.log2=log2(`ATc-30`/`ATc-0`))
+
+synergy.vs.additive.d14.30<-atc.0.30.comp.d14 %>% 
+  dplyr::mutate(guide.1=gene.name.1, guide.1B = "control1", guide.2=gene.name.2,guide.2B = "control1",
+                log2.reduction.reads1=difference.log2[match(paste0(guide.1,guide.1B), paste0(gene.name.1,gene.name.2))],
+                log2.reduction.reads2=difference.log2[match(paste0(guide.2,guide.2B), paste0(gene.name.2,gene.name.1))]) %>% 
+mutate(
+  log2.reduction.reads1=ifelse(log2.reduction.reads1>=0,0,log2.reduction.reads1),
+  log2.reduction.reads2=ifelse(log2.reduction.reads2>=0,0,log2.reduction.reads2),
+  additive.effect=log2.reduction.reads1+log2.reduction.reads2,
+      syn.add.diff=difference.log2-additive.effect) %>% 
+  mutate(essentiality1=dual_grna_libraries$essential[match(gene.name.1,dual_grna_libraries$gene.name)],
+         essentiality2=dual_grna_libraries$essential[match(gene.name.2,dual_grna_libraries$gene.name)]) %>% 
+  filter(!syn.add.diff=="-Inf")
+
+#Adjust global min and max
+global_min <- min(synergy.vs.additive.d14.30$syn.add.diff)
+##Must removed infinite number at the top of the table
+global_max <- max(synergy.vs.additive.d14.30$syn.add.diff)
+
+#Heatmap
+temp_a <- synergy.vs.additive.d14.30 %>% 
+  filter(replicate=="1") %>% 
+  ggplot()+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(syn.add.diff)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+  scale_fill_gradientn(colours = rev(rainbow(6)), name = bquote(atop("Read Frequency", "Log2")),limits=c(global_min,global_max))+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 14, ATc 30, Replicate 1")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5), panel.grid = element_blank()) 
+
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/synergy.vs.additive/","Synergy vs Additive effects - Day 14, ATc 30, Replicate 1.jpg"),plot = temp_a,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+
+synergy.vs.additive.d14.30.avg <- synergy.vs.additive.d14.30 %>% 
+  group_by(gene.name.1,gene.name.2,guide.id.1,guide.id.2,day,guide.1,guide.1B,guide.2,guide.2B) %>%   
+  summarise(mean.ATc.30=mean(`ATc-30`),
+         mean.ATc.0=mean(`ATc-0`),
+         mean.difference.log2=mean(difference.log2),
+         mean.syn.add.diff=mean(syn.add.diff),
+         sd.mean.syn.add.diff=sd(syn.add.diff),
+         mean.log2.reduction.reads1=mean(log2.reduction.reads1),
+         mean.log2.reduction.reads2=mean(log2.reduction.reads2),
+         additive.effect=mean(additive.effect),
+         n=n()) %>% 
+  mutate(essentiality1=dual_grna_libraries$essential[match(gene.name.1,dual_grna_libraries$gene.name)],
+         essentiality2=dual_grna_libraries$essential[match(gene.name.2,dual_grna_libraries$gene.name)])
+
+x <- ggplot(synergy.vs.additive.d14.30.avg)+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(mean.syn.add.diff)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+  scale_fill_gradientn(colours = rev(rainbow(6)), name = bquote(atop("Read Frequency", "Log2")),limits=c(global_min,global_max))+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 14,ATc 30 - Average")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5), panel.grid = element_blank()) 
+
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/synergy.vs.additive/","Synergy vs Additive effects - Day 14 - ATc 30 - Average.jpg"),plot = x,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+
+##List of hits that have greater that a 4 log2 reduction
+syn.vs.add.30.14 <- synergy.vs.additive.d14.30.avg %>% 
+  filter(mean.syn.add.diff<(-4))
+
+write_xlsx(syn.vs.add.30.14,"/Users/chaca430/Documents/R Studio/all.data/syn.vs.add.diff.30.14.xlsx")  
+```
+
+```{r Synergy vs Additive effects - Day 14 - ATc3, echo=FALSE}
+#####################################################
+##Check w Simon, something seems wrong
+#####################################################
+atc.0.3.comp.d14 <- removed.dataset %>% 
+  filter(sample.name%in%c("ATc-3","ATc-0"),
+         day==14) 
+# %>% 
+#   pivot_wider(id_cols = c(gene.name.1,gene.name.2,day,replicate, guide.id.1,guide.id.2), names_from = sample.name, values_from = reads.norm.t0) %>% 
+#   mutate(modified.int=ifelse(is.na(`ATc-3`),1,0),
+#     `ATc-3`=ifelse(is.na(`ATc-3`),0,`ATc-3`)) 
+    # difference.log2=log2(`ATc-3`/`ATc-0`))
+
+synergy.vs.additive.d14.3<-atc.0.3.comp.d14 %>% 
+  dplyr::mutate(guide.1=gene.name.1, guide.1B = "control1", guide.2=gene.name.2,guide.2B = "control1",
+                log2.reduction.reads1=difference.log2[match(paste0(guide.1,guide.1B), paste0(gene.name.1,gene.name.2))],
+                log2.reduction.reads2=difference.log2[match(paste0(guide.2,guide.2B), paste0(gene.name.2,gene.name.1))]) %>% 
+mutate(
+  log2.reduction.reads1=ifelse(log2.reduction.reads1>=0,0,log2.reduction.reads1),
+  log2.reduction.reads2=ifelse(log2.reduction.reads2>=0,0,log2.reduction.reads2),
+  additive.effect=log2.reduction.reads1+log2.reduction.reads2,
+      syn.add.diff=difference.log2-additive.effect) %>% 
+  mutate(essentiality1=dual_grna_libraries$essential[match(gene.name.1,dual_grna_libraries$gene.name)],
+         essentiality2=dual_grna_libraries$essential[match(gene.name.2,dual_grna_libraries$gene.name)]) %>% 
+  filter(!syn.add.diff=="-Inf")
+
+#Adjust global min and max
+global_min <- min(synergy.vs.additive.d14.3$syn.add.diff)
+##Must removed infinite number at the top of the table
+global_max <- max(synergy.vs.additive.d14.3$syn.add.diff)
+
+#Heatmap
+temp_a <- synergy.vs.additive.d14.3 %>% 
+  filter(replicate=="1") %>% 
+  ggplot()+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(syn.add.diff)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+  scale_fill_gradientn(colours = rev(rainbow(6)), name = bquote(atop("Read Frequency", "Log2")),limits=c(global_min,global_max))+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 14, ATc 30, Replicate 1")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5), panel.grid = element_blank()) 
+
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/synergy.vs.additive/","Synergy vs Additive effects - Day 14, ATc 30, Replicate 1.jpg"),plot = temp_a,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+
+synergy.vs.additive.d14.30.avg <- synergy.vs.additive.d14.30 %>% 
+  group_by(gene.name.1,gene.name.2,guide.id.1,guide.id.2,day,guide.1,guide.1B,guide.2,guide.2B) %>%   
+  summarise(mean.ATc.30=mean(`ATc-30`),
+         mean.ATc.0=mean(`ATc-0`),
+         mean.difference.log2=mean(difference.log2),
+         mean.syn.add.diff=mean(syn.add.diff),
+         sd.mean.syn.add.diff=sd(syn.add.diff),
+         mean.log2.reduction.reads1=mean(log2.reduction.reads1),
+         mean.log2.reduction.reads2=mean(log2.reduction.reads2),
+         additive.effect=mean(additive.effect),
+         n=n()) %>% 
+  mutate(essentiality1=dual_grna_libraries$essential[match(gene.name.1,dual_grna_libraries$gene.name)],
+         essentiality2=dual_grna_libraries$essential[match(gene.name.2,dual_grna_libraries$gene.name)])
+
+x <- ggplot(synergy.vs.additive.d14.30.avg)+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(mean.syn.add.diff)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+  scale_fill_gradientn(colours = rev(rainbow(6)), name = bquote(atop("Read Frequency", "Log2")),limits=c(global_min,global_max))+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 14,ATc 30 - Average")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5), panel.grid = element_blank()) 
+
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/synergy.vs.additive/","Synergy vs Additive effects - Day 14 - ATc 30 - Average.jpg"),plot = x,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+
+##List of hits that have greater that a 4 log2 reduction
+syn.vs.add.30.14 <- synergy.vs.additive.d14.30.avg %>% 
+  filter(mean.syn.add.diff<(-4))
+
+write_xlsx(syn.vs.add.30.14,"/Users/chaca430/Documents/R Studio/all.data/syn.vs.add.diff.30.14.xlsx")  
+```
+
+```{r COmbined analysis of synergy vs additive, echo=FALSE}
+comb.syn.add <- removed.dataset %>% 
+  filter(!sample.name%in%c("ATc-3","ATc-3_0"),
+         !day==0,
+         !sample.metadata%in%c("ATc-0_10_3","ATc-30_10_3","Atc-300_10_3"),
+    !gene.name.1%in%c("control2","control3","control4","control5","efpA","leuS","rpsP"),
+         !gene.name.2%in%c("control2","control3","control4","control5","efpA","leuS","rpsP")) %>%    
+  pivot_wider(id_cols = c(gene.name.1,gene.name.2,day,replicate, guide.id.1,guide.id.2), names_from = sample.name, values_from = reads.norm.t0) %>% 
+  mutate(modified.int=ifelse(is.na(`ATc-300`),1,0),
+    `ATc-300`=ifelse(is.na(`ATc-300`),0,`ATc-300`), 
+    difference.log2.300=log2(`ATc-300`/`ATc-0`)) %>% 
+    mutate(modified.int=ifelse(is.na(`ATc-30`),1,0),
+    `ATc-30`=ifelse(is.na(`ATc-30`),0,`ATc-30`), 
+    difference.log2.30=log2(`ATc-30`/`ATc-0`)) %>% 
+    mutate(modified.int=ifelse(is.na(`ATc-300_0`),1,0),
+    `ATc-300_0`=ifelse(is.na(`ATc-300_0`),0,`ATc-300_0`), 
+    difference.log2.300_0=log2(`ATc-300_0`/`ATc-0`)) %>% 
+    mutate(modified.int=ifelse(is.na(`ATc-30_0`),1,0),
+    `ATc-30_0`=ifelse(is.na(`ATc-30_0`),0,`ATc-30_0`), 
+    difference.log2.30_0=log2(`ATc-30_0`/`ATc-0`)) 
+
+
+comb.synergy.vs.additive<-comb.syn.add %>% 
+  na.omit(`ATc-0`) %>% 
+  dplyr::mutate(guide.1=gene.name.1, guide.1B = "control1", guide.2=gene.name.2,guide.2B = "control1",
+                log2.reduction.reads1.300=difference.log2.300[match(paste0(guide.1,guide.1B), paste0(gene.name.1,gene.name.2))],
+                log2.reduction.reads2.300=difference.log2.300[match(paste0(guide.2,guide.2B), paste0(gene.name.2,gene.name.1))],
+                log2.reduction.reads1.30=difference.log2.30[match(paste0(guide.1,guide.1B), paste0(gene.name.1,gene.name.2))],
+                log2.reduction.reads2.30=difference.log2.30[match(paste0(guide.2,guide.2B), paste0(gene.name.2,gene.name.1))],
+                log2.reduction.reads1.30_0=difference.log2.30_0[match(paste0(guide.1,guide.1B), paste0(gene.name.1,gene.name.2))],
+                log2.reduction.reads2.30_0=difference.log2.30_0[match(paste0(guide.2,guide.2B), paste0(gene.name.2,gene.name.1))],
+                log2.reduction.reads1.300_0=difference.log2.300_0[match
+                                                                  (paste0(guide.1,guide.1B), paste0(gene.name.1,gene.name.2))],
+                log2.reduction.reads2.300_0=difference.log2.300_0[match
+                                                                  (paste0(guide.2,guide.2B), paste0(gene.name.2,gene.name.1))])%>%
+  mutate(
+  log2.reduction.reads1.300=ifelse(log2.reduction.reads1.300>=0,0,log2.reduction.reads1.300),
+  log2.reduction.reads2.300=ifelse(log2.reduction.reads2.300>=0,0,log2.reduction.reads2.300),
+  additive.effect.300=log2.reduction.reads1.300+log2.reduction.reads2.300,
+  log2.reduction.reads1.30=ifelse(log2.reduction.reads1.30>=0,0,log2.reduction.reads1.30),
+  log2.reduction.reads2.30=ifelse(log2.reduction.reads2.30>=0,0,log2.reduction.reads2.30),
+  additive.effect.30=log2.reduction.reads1.30+log2.reduction.reads2.30,
+  log2.reduction.reads1.30_0=ifelse(log2.reduction.reads1.30_0>=0,0,log2.reduction.reads1.30_0),
+  log2.reduction.reads2.30_0=ifelse(log2.reduction.reads2.30_0>=0,0,log2.reduction.reads2.30_0),
+  log2.reduction.reads1.30_0=ifelse(log2.reduction.reads1.30_0=="-Inf",0,log2.reduction.reads1.30_0),
+  log2.reduction.reads2.30_0=ifelse(log2.reduction.reads2.30_0=="-Inf",0,log2.reduction.reads2.30_0),
+  additive.effect.30_0=log2.reduction.reads1.30_0+log2.reduction.reads2.30_0,
+  log2.reduction.reads1.300_0=ifelse(log2.reduction.reads1.300_0>=0,0,log2.reduction.reads1.300_0),
+  log2.reduction.reads2.300_0=ifelse(log2.reduction.reads2.300_0>=0,0,log2.reduction.reads2.300_0),
+  log2.reduction.reads1.300_0=ifelse(log2.reduction.reads1.300_0=="-Inf",0,log2.reduction.reads1.300_0),
+  log2.reduction.reads2.300_0=ifelse(log2.reduction.reads2.300_0=="-Inf",0,log2.reduction.reads2.300_0),
+  additive.effect.300_0=log2.reduction.reads1.300_0+log2.reduction.reads2.300_0,
+  syn.add.diff.300=difference.log2.300-additive.effect.300,
+  syn.add.diff.30=difference.log2.30-additive.effect.30,
+  syn.add.diff.300_0=difference.log2.300_0-additive.effect.300_0,
+  syn.add.diff.30_0=difference.log2.30_0-additive.effect.30_0) %>% 
+  mutate(essentiality1=dual_grna_libraries$essential[match(gene.name.1,dual_grna_libraries$gene.name)],
+         essentiality2=dual_grna_libraries$essential[match(gene.name.2,dual_grna_libraries$gene.name)])
+#Adjust global min and max
+global_min_300 <- min(comb.synergy.vs.additive$syn.add.diff.300[is.finite(comb.synergy.vs.additive$syn.add.diff.300)])
+global_min_30 <- min(comb.synergy.vs.additive$syn.add.diff.30[is.finite(comb.synergy.vs.additive$syn.add.diff.30)])
+global_min_300_0 <- min(comb.synergy.vs.additive$syn.add.diff.300_0[is.finite(comb.synergy.vs.additive$syn.add.diff.300_0)])
+global_min_30_0 <- min(comb.synergy.vs.additive$syn.add.diff.30_0[is.finite(comb.synergy.vs.additive$syn.add.diff.30_0)])
+##Must removed infinite number at the top of the table
+global_max_300 <- max(comb.synergy.vs.additive$syn.add.diff.300[is.finite(comb.synergy.vs.additive$syn.add.diff.300)])
+global_max_30 <- max(comb.synergy.vs.additive$syn.add.diff.30[is.finite(comb.synergy.vs.additive$syn.add.diff.30)])
+global_max_300_0 <- max(comb.synergy.vs.additive$syn.add.diff.300_0[is.finite(comb.synergy.vs.additive$syn.add.diff.300_0)])
+global_max_30_0 <- max(comb.synergy.vs.additive$syn.add.diff.30_0[is.finite(comb.synergy.vs.additive$syn.add.diff.30_0)])
+
+global_max_syn_add <- pmax(global_max_30,global_max_30_0,global_max_300,global_max_300_0)
+global_min_syn_add <- pmin(global_min_30,global_min_30_0,global_min_300,global_min_300_0)
+ 
+#Heatmap
+comb.synergy.vs.additive <-  comb.synergy.vs.additive %>% 
+  mutate(class1=dual_grna_libraries$class[match(gene.name.1,dual_grna_libraries$gene.name)],
+         class2=dual_grna_libraries$class[match(gene.name.2,dual_grna_libraries$gene.name)]) 
+  
+comb.synergy.vs.additive$class1 <- as.factor(comb.synergy.vs.additive$class1)
+comb.synergy.vs.additive$class2 <- as.factor(comb.synergy.vs.additive$class2)
+comb.synergy.vs.additive$gene.name.1 <- fct_reorder(comb.synergy.vs.additive$gene.name.1,
+                                                     comb.synergy.vs.additive$class1)
+
+hm.for.matt <- comb.synergy.vs.additive %>% 
+  mutate(gene.name.1=factor(gene.name.1,levels=c("aroK","lysA","metA","trpA","trpB","ftsZ","pknA","alr","DprE1","EmbA","EmbC","glf","glgE","HadA","InhA","KasA","mmpL3","murE","murX","rfe","treS","ddn","fbiC","folP1","dnaB","DnaN","gyrA","gyrB","rpoA","rpoB","efpA","fadD32","pks13","PptT","atpB","AtpE","cydB","fgd1","glcB","menD","ndh","qcrB","adoK","GuaB2","pyrG_hm","ClpC1","leuS","rplC","rpsA","rpsP","rrl","rrs","ethA","folC","mshA")),
+         gene.name.2=factor(gene.name.2,levels=c("aroK","lysA","metA","trpA","trpB","ftsZ","pknA","alr","DprE1","EmbA","EmbC","glf","glgE","HadA","InhA","KasA","mmpL3","murE","murX","rfe","treS","ddn","fbiC","folP1","dnaB","DnaN","gyrA","gyrB","rpoA","rpoB","efpA","fadD32","pks13","PptT","atpB","AtpE","cydB","fgd1","glcB","menD","ndh","qcrB","adoK","GuaB2","pyrG_hm","ClpC1","leuS","rplC","rpsA","rpsP","rrl","rrs","ethA","folC","mshA")))
+
+temp_z <- hm.for.matt %>% 
+filter(!gene.name.1=="control1",!gene.name.2=="control1",!syn.add.diff.300=="-Inf") 
+  
+temp_z %>% ggplot()+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(syn.add.diff.300)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+scale_fill_viridis_b(option="inferno", name = bquote(atop("Read Frequency", "Log2")),
+                       limits=c(global_min_syn_add,-2),
+                     na.value= "#FCFFA4")+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 14, ATc 300")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 8), axis.text.y.left = element_text(size = 8), panel.grid = element_blank()) 
+
+print(temp_z)
+
+temp_z %>% ggplot()+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(syn.add.diff.300)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+  scale_fill_gradient(low = "#1A05AD",high = "white", name = bquote(atop("Read Frequency", "Log2")),
+                      limits=c(global_min_syn_add,-1),
+                      na.value = "white")+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 14, ATc 300")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 8), axis.text.y.left = element_text(size = 8), panel.grid = element_blank()) 
+
+  geom_histogram()+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(syn.add.diff.30)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+scale_fill_viridis_b(option="inferno", name = bquote(atop("Read Frequency", "Log2")),
+                       limits=c(global_min_syn_add,0))+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 5, ATc 30")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5), panel.grid = element_blank()) 
+
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/synergy.vs.additive/","Synergy vs Additive effects - Day 5, ATc 30.jpg"),plot = temp_a,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+
+synergy.vs.additive.comb.avg <- comb.synergy.vs.additive %>% 
+  group_by(gene.name.1,gene.name.2,guide.id.1,guide.id.2,day,guide.1,guide.1B,guide.2,guide.2B) %>%   
+  summarise(
+         mean.difference.log2.30=mean(difference.log2.30),
+         mean.difference.log2.300=mean(difference.log2.300),
+         mean.difference.log2.30_0=mean(difference.log2.30_0),
+         mean.difference.log2.300_0=mean(difference.log2.300_0),
+         mean.syn.add.diff.30=mean(syn.add.diff.30),
+         mean.syn.add.diff.300=mean(syn.add.diff.300),
+         mean.syn.add.diff.30_0=mean(syn.add.diff.30_0),
+         mean.syn.add.diff.300_0=mean(syn.add.diff.300_0),
+         sd.mean.syn.add.diff.30=sd(syn.add.diff.30),
+         sd.mean.syn.add.diff.300=sd(syn.add.diff.300),
+         sd.mean.syn.add.diff.30_0=sd(syn.add.diff.30_0),
+         sd.mean.syn.add.diff.300_0=sd(syn.add.diff.300_0),
+         mean.log2.reduction.reads1.30=mean(log2.reduction.reads1.30),
+         mean.log2.reduction.reads2.30=mean(log2.reduction.reads2.30),
+         mean.log2.reduction.reads1.300=mean(log2.reduction.reads1.300),
+         mean.log2.reduction.reads2.300=mean(log2.reduction.reads2.300),
+         mean.log2.reduction.reads1.30_0=mean(log2.reduction.reads1.30_0),
+         mean.log2.reduction.reads2.30_0=mean(log2.reduction.reads2.30_0),
+         mean.log2.reduction.reads1.300_0=mean(log2.reduction.reads1.300_0),
+         mean.log2.reduction.reads2.300_0=mean(log2.reduction.reads2.300_0),
+         mean.additive.effect.30=mean(additive.effect.30),
+         mean.additive.effect.300=mean(additive.effect.300),
+         mean.additive.effect.30_0=mean(additive.effect.30_0),
+         mean.additive.effect.300_0=mean(additive.effect.300_0)) %>% 
+  mutate(essentiality1=dual_grna_libraries$essential[match(gene.name.1,dual_grna_libraries$gene.name)],
+         essentiality2=dual_grna_libraries$essential[match(gene.name.2,dual_grna_libraries$gene.name)])
+
+###List of hits that have greater than a 4 log2 reduction
+syn.vs.add.comb <- synergy.vs.additive.comb.avg %>% 
+mutate(guide.pair=paste0(sort(c(gene.name.1,gene.name.2)),collapse = " + ")) %>% 
+  select(guide.pair,
+         gene.name.1,
+         gene.name.2,
+         everything()) %>% 
+  filter(mean.syn.add.diff.300<(-3),!mean.syn.add.diff.300=="-Inf")
+
+ temp_c <-  ggplot(syn.vs.add.comb)+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(mean.syn.add.diff.300)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+ scale_fill_viridis_b(option="inferno", name = bquote(atop("Read Frequency", "Log2"),),
+                       limits=c(global_min_syn_add,0))+
+  theme(aspect.ratio = 2)+
+  ggtitle("Interactions that have greater than 5-log2 reduction")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5), panel.grid = element_blank()) 
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/","Interactions that have greater than 5-log2 reduction.jpg"),plot = temp_c,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+ 
+write_xlsx(syn.vs.add.comb,"/Users/chaca430/Documents/R Studio/all.data/syn.vs.add.comb.3.xlsx") 
+
+ #Heatmap
+temp_a <- synergy.vs.additive.comb.avg %>% 
+filter(day==5,!mean.syn.add.diff.30>=0) %>% 
+  ggplot()+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(mean.syn.add.diff.30)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+scale_fill_viridis_b(option="inferno", name = bquote(atop("Read Frequency", "Log2"),),
+                       limits=c(global_min_syn_add,0))+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 5, ATc 30")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5), panel.grid = element_blank()) 
+print(temp_a)
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/","Synergy vs Additive effects - Day 5, ATc 30.jpg"),plot = temp_a,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+#Histogram
+temp_b <- synergy.vs.additive.comb.avg %>% 
+filter(day==5,!mean.syn.add.diff.30>=0,) %>% 
+  ggplot() + 
+  geom_histogram(aes(x=mean.syn.add.diff.30),bins = 20)+
+  labs(y="Number of Combinations", x="Log2 Reduction in Reads")+ 
+  ggtitle("Synergistic vs Additive Effects - Day 5, ATc 30")+
+  theme(panel.background = element_blank())+
+  border(color = "black")+
+  xlim(-9,0)
+print(temp_b)
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/synergy.vs.additive/","Synergy vs Additive effects - Day 5, ATc 30 - Histo.jpg"),plot = temp_b,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+```
+
+```{r Synergy vs Additive effects - Day 10 - ATc 30, echo=FALSE}
+atc.0.30.comp.d10 <- removed.dataset %>% 
+  filter(sample.name%in%c("ATc-30","ATc-0"),
+         day==10,
+         !gene.name.1%in%c("control2","control3","control4","control5","efpA","leuS","rpsP"),
+         !gene.name.2%in%c("control2","control3","control4","control5","efpA","leuS","rpsP")) %>% 
+  pivot_wider(id_cols = c(gene.name.1,gene.name.2,day,replicate, guide.id.1,guide.id.2), names_from = sample.name, values_from = reads.norm.t0) %>% 
+  mutate(modified.int=ifelse(is.na(`ATc-30`),1,0),
+    `ATc-30`=ifelse(is.na(`ATc-30`),0,`ATc-30`), difference.log2=log2(`ATc-30`/`ATc-0`))
+
+synergy.vs.additive.d10.30<-atc.0.30.comp.d10 %>% 
+  dplyr::mutate(guide.1=gene.name.1, guide.1B = "control1", guide.2=gene.name.2,guide.2B = "control1",
+                log2.reduction.reads1=difference.log2[match(paste0(guide.1,guide.1B), paste0(gene.name.1,gene.name.2))],
+                log2.reduction.reads2=difference.log2[match(paste0(guide.2,guide.2B), paste0(gene.name.2,gene.name.1))]) %>% 
+mutate(
+  log2.reduction.reads1=ifelse(log2.reduction.reads1>=0,0,log2.reduction.reads1),
+  log2.reduction.reads2=ifelse(log2.reduction.reads2>=0,0,log2.reduction.reads2),
+  additive.effect=log2.reduction.reads1+log2.reduction.reads2,
+      syn.add.diff=difference.log2-additive.effect) %>% 
+  mutate(essentiality1=dual_grna_libraries$essential[match(gene.name.1,dual_grna_libraries$gene.name)],
+         essentiality2=dual_grna_libraries$essential[match(gene.name.2,dual_grna_libraries$gene.name)]) %>% 
+  filter(!syn.add.diff=="-Inf")
+
+#Adjust global min and max
+global_min <- min(synergy.vs.additive.d10.30$syn.add.diff)
+##Must removed infinite number at the top of the table
+global_max <- max(synergy.vs.additive.d10.30$syn.add.diff)
+
+#Heatmap
+temp_a <- synergy.vs.additive.d10.30 %>% 
+  filter(replicate=="5") %>% 
+  ggplot()+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(syn.add.diff)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+  scale_fill_gradientn(colours = rev(rainbow(6)), name = bquote(atop("Read Frequency", "Log2")),limits=c(global_min,global_max))+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 10, ATc 30 - Replicate 5")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5), panel.grid = element_blank()) 
+
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/synergy.vs.additive/","Synergy vs Additive effects - Day 10, ATc 30 - Replicate 5.jpg"),plot = temp_a,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+
+synergy.vs.additive.d10.30.avg <- synergy.vs.additive.d10.30 %>% 
+  group_by(gene.name.1,gene.name.2,guide.id.1,guide.id.2,day,guide.1,guide.1B,guide.2,guide.2B) %>%   
+  summarise(mean.ATc.30=mean(`ATc-30`),
+         mean.ATc.0=mean(`ATc-0`),
+         mean.difference.log2=mean(difference.log2),
+         mean.syn.add.diff=mean(syn.add.diff),
+         sd.mean.syn.add.diff=sd(syn.add.diff),
+         mean.log2.reduction.reads1=mean(log2.reduction.reads1),
+         mean.log2.reduction.reads2=mean(log2.reduction.reads2),
+         additive.effect=mean(additive.effect),
+         n=n()) %>% 
+  mutate(essentiality1=dual_grna_libraries$essential[match(gene.name.1,dual_grna_libraries$gene.name)],
+         essentiality2=dual_grna_libraries$essential[match(gene.name.2,dual_grna_libraries$gene.name)])
+
+x <- ggplot(synergy.vs.additive.d10.30.avg)+
+  geom_tile(aes(gene.name.1,gene.name.2,fill=(mean.syn.add.diff)))+
+  labs(x= "Guide Position 1", y= "Guide Position 2")+
+  scale_fill_gradientn(colours = rev(rainbow(6)), name = bquote(atop("Read Frequency", "Log2")),limits=c(global_min,global_max))+
+  theme(aspect.ratio = 2)+
+  ggtitle("Synergy vs Additive effects - Day 10, ATc 30 - Average")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, size = 5), axis.text.y.left = element_text(size = 5), panel.grid = element_blank()) 
+
+ggsave(paste0("/Users/chaca430/Documents/R Studio/all.data/Plots/synergy.vs.additive/","Synergy vs Additive effects - Day 10, ATc 30 - Average.jpg"),plot = x,device = "jpeg", width = 30, height = 24, units = "cm", dpi = 300) 
+
+##List of hits that have greater that a 4 log2 reduction
+syn.vs.add.30.10 <- synergy.vs.additive.d10.30.avg %>% 
+  filter(mean.syn.add.diff<(-4))
+
+write_xlsx(syn_vs_add_comb_rearrange.mm,"/Users/chaca430/Documents/R Studio/all.data/syn.comb.add.mm.xlsx") 
+
+syn_vs_add_comb_rearrange.mm <-syn_vs_add_comb_rearrange %>% 
+  group_by(gene.name.1,gene.name.2,essentiality1,essentiality2,class1,class2,day) %>% 
+  summarise(syn.add.diff.300.mean=mean(syn.add.diff.300),syn.add.diff.300.sd=sd(syn.add.diff.300))
+```
